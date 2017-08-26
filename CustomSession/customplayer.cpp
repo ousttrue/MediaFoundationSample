@@ -471,7 +471,7 @@ HRESULT CPlayer::OnTopologyStatus(IMFMediaEvent *pEvent)
         // Get the IMFVideoDisplayControl interface from EVR. This call is
         // expected to fail if the media file does not have a video stream.
 
-        (void)MFGetService(m_pSession, MR_VIDEO_RENDER_SERVICE, 
+        (void)MFGetService(m_pSession.Get(), MR_VIDEO_RENDER_SERVICE, 
                 IID_PPV_ARGS(&m_pVideoDisplay));
 
         hr = StartPlayback();
@@ -607,7 +607,6 @@ HRESULT CPlayer::CloseSession()
         }
     }
 
-    SafeRelease(&m_pSession);
     m_state = Closed;
     return hr;
 }

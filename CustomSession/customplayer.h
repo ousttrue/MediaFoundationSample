@@ -107,7 +107,7 @@ protected:
 protected:
     long                    m_nRefCount;        // Reference count.
 
-    IMFMediaSession         *m_pSession;
+    Microsoft::WRL::ComPtr<IMFMediaSession>         m_pSession;
     Microsoft::WRL::ComPtr<IMFMediaSource>          m_pSource;
     IMFVideoDisplayControl  *m_pVideoDisplay;
 
