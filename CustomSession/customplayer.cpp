@@ -32,7 +32,49 @@ HRESULT GetEventObject(IMFMediaEvent *pEvent, Q **ppObject)
     return hr;
 }
 
-HRESULT CreateMediaSource(PCWSTR pszURL, IMFMediaSource **ppSource);
+//  Create a media source from a URL.
+static Microsoft::WRL::ComPtr<IMFMediaSource> CreateMediaSource(PCWSTR sURL)
+{
+    // Create the source resolver.
+    Microsoft::WRL::ComPtr<IMFSourceResolver> pSourceResolver;
+    HRESULT hr = MFCreateSourceResolver(&pSourceResolver);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // Use the source resolver to create the media source.
+
+    // Note: For simplicity this sample uses the synchronous method to create 
+    // the media source. However, creating a media source can take a noticeable
+    // amount of time, especially for a network source. For a more responsive 
+    // UI, use the asynchronous BeginCreateObjectFromURL method.
+
+    MF_OBJECT_TYPE ObjectType = MF_OBJECT_INVALID;
+    Microsoft::WRL::ComPtr<IUnknown> pSource;
+    hr = pSourceResolver->CreateObjectFromURL(
+        sURL,                       // URL of the source.
+        MF_RESOLUTION_MEDIASOURCE,  // Create a source object.
+        NULL,                       // Optional property store.
+        &ObjectType,        // Receives the created object type. 
+        &pSource            // Receives a pointer to the media source.
+    );
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // Get the IMFMediaSource interface from the media source.
+    Microsoft::WRL::ComPtr<IMFMediaSource> ppSource;
+    
+    hr = pSource.As(&ppSource);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    return ppSource;
+}
 
 HRESULT CreatePlaybackTopology(IMFMediaSource *pSource, 
         IMFPresentationDescriptor *pPD, HWND hVideoWnd,IMFTopology **ppTopology);
@@ -160,9 +202,10 @@ HRESULT CPlayer::OpenURL(const WCHAR *sURL)
     }
 
     // Create the media source.
-    hr = CreateMediaSource(sURL, &m_pSource);
-    if (FAILED(hr))
+    m_pSource = CreateMediaSource(sURL);
+    if (!m_pSource)
     {
+        hr = E_FAIL;
         goto done;
     }
 
@@ -174,7 +217,7 @@ HRESULT CPlayer::OpenURL(const WCHAR *sURL)
     }
 
     // Create a partial topology.
-    hr = CreatePlaybackTopology(m_pSource, pSourcePD, m_hwndVideo, &pTopology);
+    hr = CreatePlaybackTopology(m_pSource.Get(), pSourcePD, m_hwndVideo, &pTopology);
     if (FAILED(hr))
     {
         goto done;
@@ -463,7 +506,7 @@ HRESULT CPlayer::OnNewPresentation(IMFMediaEvent *pEvent)
     }
 
     // Create a partial topology.
-    hr = CreatePlaybackTopology(m_pSource, pPD,  m_hwndVideo,&pTopology);
+    hr = CreatePlaybackTopology(m_pSource.Get(), pPD,  m_hwndVideo,&pTopology);
     if (FAILED(hr))
     {
         goto done;
@@ -564,7 +607,6 @@ HRESULT CPlayer::CloseSession()
         }
     }
 
-    SafeRelease(&m_pSource);
     SafeRelease(&m_pSession);
     m_state = Closed;
     return hr;
@@ -606,48 +648,6 @@ HRESULT CPlayer::Play()
 }
 
 
-//  Create a media source from a URL.
-HRESULT CreateMediaSource(PCWSTR sURL, IMFMediaSource **ppSource)
-{
-    MF_OBJECT_TYPE ObjectType = MF_OBJECT_INVALID;
-
-    IMFSourceResolver* pSourceResolver = NULL;
-    IUnknown* pSource = NULL;
-
-    // Create the source resolver.
-    HRESULT hr = MFCreateSourceResolver(&pSourceResolver);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Use the source resolver to create the media source.
-
-    // Note: For simplicity this sample uses the synchronous method to create 
-    // the media source. However, creating a media source can take a noticeable
-    // amount of time, especially for a network source. For a more responsive 
-    // UI, use the asynchronous BeginCreateObjectFromURL method.
-
-    hr = pSourceResolver->CreateObjectFromURL(
-            sURL,                       // URL of the source.
-            MF_RESOLUTION_MEDIASOURCE,  // Create a source object.
-            NULL,                       // Optional property store.
-            &ObjectType,        // Receives the created object type. 
-            &pSource            // Receives a pointer to the media source.
-            );
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Get the IMFMediaSource interface from the media source.
-    hr = pSource->QueryInterface(IID_PPV_ARGS(ppSource));
-
-done:
-    SafeRelease(&pSourceResolver);
-    SafeRelease(&pSource);
-    return hr;
-}
 
 //  Create an activation object for a renderer, based on the stream media type.
 

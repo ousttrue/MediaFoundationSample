@@ -20,7 +20,7 @@
 #include <mfidl.h>
 #include <mferror.h>
 #include <evr.h>
-
+#include <wrl/client.h>
 #include "resource.h"
 
 template <class T> void SafeRelease(T **ppT)
@@ -108,7 +108,7 @@ protected:
     long                    m_nRefCount;        // Reference count.
 
     IMFMediaSession         *m_pSession;
-    IMFMediaSource          *m_pSource;
+    Microsoft::WRL::ComPtr<IMFMediaSource>          m_pSource;
     IMFVideoDisplayControl  *m_pVideoDisplay;
 
     HWND                    m_hwndVideo;        // Video window.
