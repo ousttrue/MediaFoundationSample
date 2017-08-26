@@ -6,13 +6,14 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
 #include "CustomPlayer.h"
+#include <string>
 
 PCWSTR szTitle = L"BasicPlayback";
 PCWSTR szWindowClass = L"MFBASICPLAYBACK";
 
 HINSTANCE   g_hInstance;                        // current instance
 BOOL        g_bRepaintClient = TRUE;            // Repaint the application client area?
-CPlayer     *g_pPlayer = NULL;                  // Global player object. 
+Microsoft::WRL::ComPtr<CPlayer> g_pPlayer;                  // Global player object. 
 
 // Note: After WM_CREATE is processed, g_pPlayer remains valid until the
 // window is destroyed.
@@ -68,7 +69,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     if (g_pPlayer)
     {
         g_pPlayer->Shutdown();
-        SafeRelease(&g_pPlayer);
+        g_pPlayer.Reset();
     }
     return 0;
 }
@@ -169,19 +170,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
-//  Open an audio/video file.
-void OnFileOpen(HWND hwnd)
+static HRESULT OpenDialog(HWND hwnd, std::wstring &result)
 {
-    IFileOpenDialog *pFileOpen = NULL;
-    IShellItem *pItem = NULL;
-    PWSTR pszFilePath = NULL;
-
     // Create the FileOpenDialog object.
-    HRESULT hr = CoCreateInstance(__uuidof(FileOpenDialog), NULL, 
-            CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileOpen));
+    Microsoft::WRL::ComPtr<IFileOpenDialog> pFileOpen;
+    auto hr = CoCreateInstance(__uuidof(FileOpenDialog), NULL,
+        CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileOpen));
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     // Show the Open dialog box.
@@ -189,43 +186,51 @@ void OnFileOpen(HWND hwnd)
     if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED))
     {
         // The user canceled the dialog. Do not treat as an error.
-        hr = S_OK;
-        goto done;
+        return S_OK;
     }
     else if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     // Get the file name from the dialog box.
+    Microsoft::WRL::ComPtr<IShellItem> pItem;
     hr = pFileOpen->GetResult(&pItem);
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
+    PWSTR pszFilePath = NULL;
     hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath);
     if (FAILED(hr))
     {
-        goto done;
+        // when break, wrong thread
+        return hr;
     }
+    result = pszFilePath;
+    CoTaskMemFree(pszFilePath);
 
-    // Display the file name to the user.
-    hr = g_pPlayer->OpenURL(pszFilePath);
-    if (SUCCEEDED(hr))
-    {
-        UpdateUI(hwnd, OpenPending);
+    return S_OK;
+}
+
+//  Open an audio/video file.
+void OnFileOpen(HWND hwnd)
+{
+    std::wstring filePath;
+    auto hr = OpenDialog(hwnd, filePath);
+    if (SUCCEEDED(hr)) {
+        // Display the file name to the user.
+        hr = g_pPlayer->OpenURL(filePath.c_str());
+        if (SUCCEEDED(hr))
+        {
+            UpdateUI(hwnd, OpenPending);
+        }
     }
-
-done:
-    if (FAILED(hr))
-    {
+    else {
         NotifyError(hwnd, L"Could not open the file.", hr);
         UpdateUI(hwnd, Closed);
     }
-    CoTaskMemFree(pszFilePath);
-    SafeRelease(&pItem);
-    SafeRelease(&pFileOpen);
 }
 
 //  Open a media file from a URL.

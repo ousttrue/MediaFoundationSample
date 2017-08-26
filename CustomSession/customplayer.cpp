@@ -291,7 +291,7 @@ static Microsoft::WRL::ComPtr<IMFTopology> CreatePlaybackTopology(
 }
 
 static Microsoft::WRL::ComPtr<IMFPresentationDescriptor> GetPresentationDescriptor(
-    IMFMediaEvent *pEvent
+    const Microsoft::WRL::ComPtr<IMFMediaEvent> &pEvent
 )
 {
     PROPVARIANT var;
@@ -557,22 +557,20 @@ HRESULT CPlayer::ResizeVideo(WORD width, WORD height)
 
 HRESULT CPlayer::Invoke(IMFAsyncResult *pResult)
 {
-    MediaEventType meType = MEUnknown;  // Event type
-
-    IMFMediaEvent *pEvent = NULL;
-
     // Get the event from the event queue.
+    Microsoft::WRL::ComPtr<IMFMediaEvent> pEvent;
     HRESULT hr = m_pSession->EndGetEvent(pResult, &pEvent);
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     // Get the event type. 
+    MediaEventType meType = MEUnknown;  // Event type
     hr = pEvent->GetType(&meType);
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     if (meType == MESessionClosed)
@@ -587,7 +585,7 @@ HRESULT CPlayer::Invoke(IMFAsyncResult *pResult)
         hr = m_pSession->BeginGetEvent(this, NULL);
         if (FAILED(hr))
         {
-            goto done;
+            return hr;
         }
     }
 
@@ -602,38 +600,34 @@ HRESULT CPlayer::Invoke(IMFAsyncResult *pResult)
     if (m_state != Closing)
     {
         // Leave a reference count on the event.
-        pEvent->AddRef();
+        pEvent.Get()->AddRef();
 
         PostMessage(m_hwndEvent, WM_APP_PLAYER_EVENT, 
-                (WPARAM)pEvent, (LPARAM)meType);
+                (WPARAM)pEvent.Get(), (LPARAM)meType);
     }
 
-done:
-    SafeRelease(&pEvent);
     return S_OK;
 }
 
 HRESULT CPlayer::HandleEvent(UINT_PTR pEventPtr)
 {
-    HRESULT hrStatus = S_OK;            
-    MediaEventType meType = MEUnknown;  
-
-    IMFMediaEvent *pEvent = (IMFMediaEvent*)pEventPtr;
-
+    Microsoft::WRL::ComPtr<IMFMediaEvent> pEvent = (IMFMediaEvent*)pEventPtr;
     if (pEvent == NULL)
     {
         return E_POINTER;
     }
 
     // Get the event type.
+    MediaEventType meType = MEUnknown;
     HRESULT hr = pEvent->GetType(&meType);
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     // Get the event status. If the operation that triggered the event 
     // did not succeed, the status is a failure code.
+    HRESULT hrStatus = S_OK;
     hr = pEvent->GetStatus(&hrStatus);
 
     // Check if the async operation succeeded.
@@ -643,7 +637,7 @@ HRESULT CPlayer::HandleEvent(UINT_PTR pEventPtr)
     }
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     switch(meType)
@@ -665,8 +659,6 @@ HRESULT CPlayer::HandleEvent(UINT_PTR pEventPtr)
             break;
     }
 
-done:
-    SafeRelease(&pEvent);
     return hr;
 }
 
@@ -690,7 +682,7 @@ HRESULT CPlayer::Shutdown()
 
 /// Protected methods
 
-HRESULT CPlayer::OnTopologyStatus(IMFMediaEvent *pEvent)
+HRESULT CPlayer::OnTopologyStatus(const Microsoft::WRL::ComPtr<IMFMediaEvent> &pEvent)
 {
     UINT32 status; 
 
@@ -710,7 +702,7 @@ HRESULT CPlayer::OnTopologyStatus(IMFMediaEvent *pEvent)
 
 
 //  Handler for MEEndOfPresentation event.
-HRESULT CPlayer::OnPresentationEnded(IMFMediaEvent *pEvent)
+HRESULT CPlayer::OnPresentationEnded(const Microsoft::WRL::ComPtr<IMFMediaEvent> &pEvent)
 {
     // The session puts itself into the stopped state automatically.
     m_state = Stopped;
@@ -722,7 +714,7 @@ HRESULT CPlayer::OnPresentationEnded(IMFMediaEvent *pEvent)
 //  This event is sent if the media source has a new presentation, which 
 //  requires a new topology. 
 
-HRESULT CPlayer::OnNewPresentation(IMFMediaEvent *pEvent)
+HRESULT CPlayer::OnNewPresentation(const Microsoft::WRL::ComPtr<IMFMediaEvent> &pEvent)
 {
     auto pPD = GetPresentationDescriptor(pEvent);
     if (!pPD) {

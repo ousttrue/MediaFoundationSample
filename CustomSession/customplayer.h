@@ -23,14 +23,6 @@
 #include <wrl/client.h>
 #include "resource.h"
 
-template <class T> void SafeRelease(T **ppT)
-{
-    if (*ppT)
-    {
-        (*ppT)->Release();
-        *ppT = NULL;
-    }
-}
 
 const UINT WM_APP_PLAYER_EVENT = WM_APP + 1;   
 
@@ -53,17 +45,17 @@ public:
     static HRESULT CreateInstance(HWND hVideo, HWND hEvent, CPlayer **ppPlayer);
 
     // IUnknown methods
-    STDMETHODIMP QueryInterface(REFIID iid, void** ppv);
-    STDMETHODIMP_(ULONG) AddRef();
-    STDMETHODIMP_(ULONG) Release();
+    STDMETHODIMP QueryInterface(REFIID iid, void** ppv)override;
+    STDMETHODIMP_(ULONG) AddRef()override;
+    STDMETHODIMP_(ULONG) Release()override;
 
     // IMFAsyncCallback methods
-    STDMETHODIMP  GetParameters(DWORD*, DWORD*)
+    STDMETHODIMP  GetParameters(DWORD*, DWORD*)override
     {
         // Implementation of this method is optional.
         return E_NOTIMPL;
     }
-    STDMETHODIMP  Invoke(IMFAsyncResult* pAsyncResult);
+    STDMETHODIMP  Invoke(IMFAsyncResult* pAsyncResult)override;
 
     // Playback
     HRESULT       OpenURL(const WCHAR *sURL);
@@ -94,12 +86,12 @@ protected:
     HRESULT StartPlayback();
 
     // Media event handlers
-    virtual HRESULT OnTopologyStatus(IMFMediaEvent *pEvent);
-    virtual HRESULT OnPresentationEnded(IMFMediaEvent *pEvent);
-    virtual HRESULT OnNewPresentation(IMFMediaEvent *pEvent);
+    virtual HRESULT OnTopologyStatus(const Microsoft::WRL::ComPtr<IMFMediaEvent> &pEvent);
+    virtual HRESULT OnPresentationEnded(const Microsoft::WRL::ComPtr<IMFMediaEvent> &pEvent);
+    virtual HRESULT OnNewPresentation(const Microsoft::WRL::ComPtr<IMFMediaEvent> &pEvent);
 
     // Override to handle additional session events.
-    virtual HRESULT OnSessionEvent(IMFMediaEvent*, MediaEventType) 
+    virtual HRESULT OnSessionEvent(const Microsoft::WRL::ComPtr<IMFMediaEvent>&, MediaEventType)
     { 
         return S_OK; 
     }
