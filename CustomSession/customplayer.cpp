@@ -466,8 +466,6 @@ HRESULT CPlayer::OnTopologyStatus(IMFMediaEvent *pEvent)
     HRESULT hr = pEvent->GetUINT32(MF_EVENT_TOPOLOGY_STATUS, &status);
     if (SUCCEEDED(hr) && (status == MF_TOPOSTATUS_READY))
     {
-        SafeRelease(&m_pVideoDisplay);
-
         // Get the IMFVideoDisplayControl interface from EVR. This call is
         // expected to fail if the media file does not have a video stream.
 
@@ -570,7 +568,7 @@ HRESULT CPlayer::CloseSession()
 
     HRESULT hr = S_OK;
 
-    SafeRelease(&m_pVideoDisplay);
+    m_pVideoDisplay.Reset();
 
     // First close the media session.
     if (m_pSession)
@@ -607,6 +605,7 @@ HRESULT CPlayer::CloseSession()
         }
     }
 
+    m_pSession.Reset();
     m_state = Closed;
     return hr;
 }

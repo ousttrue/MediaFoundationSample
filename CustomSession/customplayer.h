@@ -109,7 +109,7 @@ protected:
 
     Microsoft::WRL::ComPtr<IMFMediaSession>         m_pSession;
     Microsoft::WRL::ComPtr<IMFMediaSource>          m_pSource;
-    IMFVideoDisplayControl  *m_pVideoDisplay;
+    Microsoft::WRL::ComPtr<IMFVideoDisplayControl>  m_pVideoDisplay;
 
     HWND                    m_hwndVideo;        // Video window.
     HWND                    m_hwndEvent;        // App window to receive events.
