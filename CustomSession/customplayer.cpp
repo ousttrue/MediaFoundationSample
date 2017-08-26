@@ -10,27 +10,6 @@
 
 #pragma comment(lib, "shlwapi")
 
-template <class Q>
-HRESULT GetEventObject(IMFMediaEvent *pEvent, Q **ppObject)
-{
-    *ppObject = NULL;   // zero output
-
-    PROPVARIANT var;
-    HRESULT hr = pEvent->GetValue(&var);
-    if (SUCCEEDED(hr))
-    {
-        if (var.vt == VT_UNKNOWN)
-        {
-            hr = var.punkVal->QueryInterface(ppObject);
-        }
-        else
-        {
-            hr = MF_E_INVALIDTYPE;
-        }
-        PropVariantClear(&var);
-    }
-    return hr;
-}
 
 //  Create a media source from a URL.
 static Microsoft::WRL::ComPtr<IMFMediaSource> CreateMediaSource(PCWSTR sURL)
@@ -76,8 +55,269 @@ static Microsoft::WRL::ComPtr<IMFMediaSource> CreateMediaSource(PCWSTR sURL)
     return ppSource;
 }
 
-HRESULT CreatePlaybackTopology(IMFMediaSource *pSource, 
-        IMFPresentationDescriptor *pPD, HWND hVideoWnd,IMFTopology **ppTopology);
+static  Microsoft::WRL::ComPtr<IMFTopologyNode> CreateSourceNode(
+    const Microsoft::WRL::ComPtr<IMFMediaSource> &pSource,          // Media source.
+    const Microsoft::WRL::ComPtr<IMFPresentationDescriptor> &pPD,   // Presentation descriptor.
+    const Microsoft::WRL::ComPtr<IMFStreamDescriptor> &pSD          // Stream descriptor.
+    )
+{
+    // Create the node.
+    Microsoft::WRL::ComPtr<IMFTopologyNode> pNode;
+    HRESULT hr = MFCreateTopologyNode(MF_TOPOLOGY_SOURCESTREAM_NODE, &pNode);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // Set the attributes.
+    hr = pNode->SetUnknown(MF_TOPONODE_SOURCE, pSource.Get());
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    hr = pNode->SetUnknown(MF_TOPONODE_PRESENTATION_DESCRIPTOR, pPD.Get());
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    hr = pNode->SetUnknown(MF_TOPONODE_STREAM_DESCRIPTOR, pSD.Get());
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    return pNode;
+}
+
+//  Create an activation object for a renderer, based on the stream media type.
+static Microsoft::WRL::ComPtr<IMFActivate> CreateMediaSinkActivate(
+    const Microsoft::WRL::ComPtr<IMFStreamDescriptor> &pSourceSD,     // Pointer to the stream descriptor.
+    HWND hVideoWindow                  // Handle to the video clipping window.
+)
+{
+    // Get the media type handler for the stream.
+    Microsoft::WRL::ComPtr<IMFMediaTypeHandler> pHandler;
+    HRESULT hr = pSourceSD->GetMediaTypeHandler(&pHandler);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // Get the major media type.
+    GUID guidMajorType;
+    hr = pHandler->GetMajorType(&guidMajorType);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // Create an IMFActivate object for the renderer, based on the media type.
+    if (MFMediaType_Audio == guidMajorType)
+    {
+        // Create the audio renderer.
+        Microsoft::WRL::ComPtr<IMFActivate> pActivate;
+        hr = MFCreateAudioRendererActivate(&pActivate);
+        if (FAILED(hr))
+        {
+            return nullptr;
+        }
+        return pActivate;
+    }
+    else if (MFMediaType_Video == guidMajorType)
+    {
+        // Create the video renderer.
+        Microsoft::WRL::ComPtr<IMFActivate> pActivate;
+        hr = MFCreateVideoRendererActivate(hVideoWindow, &pActivate);
+        if (FAILED(hr))
+        {
+            return nullptr;
+        }
+        return pActivate;
+    }
+    else
+    {
+        // Unknown stream type. 
+        return nullptr;
+        // Optionally, you could deselect this stream instead of failing.
+    }
+}
+
+static Microsoft::WRL::ComPtr<IMFTopologyNode> CreateOutputNode(
+    const Microsoft::WRL::ComPtr<IMFActivate> &pActivate,     // Media sink activation object.
+    DWORD dwId                  // Identifier of the stream sink.
+)
+{
+    // Create the node.
+    Microsoft::WRL::ComPtr<IMFTopologyNode> pNode;
+    HRESULT hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &pNode);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // Set the object pointer.
+    hr = pNode->SetObject(pActivate.Get());
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // Set the stream sink ID attribute.
+    hr = pNode->SetUINT32(MF_TOPONODE_STREAMID, dwId);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    hr = pNode->SetUINT32(MF_TOPONODE_NOSHUTDOWN_ON_REMOVE, FALSE);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    return pNode;
+}
+
+
+//  Add a topology branch for one stream.
+//
+//  For each stream, this function does the following:
+//
+//    1. Creates a source node associated with the stream. 
+//    2. Creates an output node for the renderer. 
+//    3. Connects the two nodes.
+//
+//  The media session will add any decoders that are needed.
+
+static HRESULT AddBranchToPartialTopology(
+    const Microsoft::WRL::ComPtr<IMFTopology> &pTopology,         // Topology.
+    const Microsoft::WRL::ComPtr<IMFMediaSource> &pSource,        // Media source.
+    const Microsoft::WRL::ComPtr<IMFPresentationDescriptor> &pPD, // Presentation descriptor.
+    DWORD iStream,                  // Stream index.
+    HWND hVideoWnd)                 // Window for video playback.
+{
+    BOOL fSelected = FALSE;
+    Microsoft::WRL::ComPtr<IMFStreamDescriptor> pSD;
+    HRESULT hr = pPD->GetStreamDescriptorByIndex(iStream, &fSelected, &pSD);
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+    if (!fSelected)
+    {
+        // else: If not selected, don't add the branch. 
+        return E_FAIL;
+    }
+
+    auto pSourceNode = CreateSourceNode(pSource, pPD, pSD);
+    if (!pSourceNode) 
+    {
+        return E_FAIL;
+    }
+
+    // Add the node to the topology.
+    hr = pTopology->AddNode(pSourceNode.Get());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
+    // Create the media sink activation object.
+    auto pSinkActivate = CreateMediaSinkActivate(pSD, hVideoWnd);
+    if (!pSinkActivate)
+    {
+        return E_FAIL;
+    }
+
+    auto pOutputNode = CreateOutputNode(pSinkActivate, 0);
+    if (!pOutputNode) {
+        return E_FAIL;
+    }
+
+    // Add the node to the topology.
+    hr = pTopology->AddNode(pOutputNode.Get());
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
+    // Connect the source node to the output node.
+    hr = pSourceNode->ConnectOutput(0, pOutputNode.Get(), 0);
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
+    return S_OK;
+}
+
+
+//  Create a playback topology from a media source.
+static Microsoft::WRL::ComPtr<IMFTopology> CreatePlaybackTopology(
+    const Microsoft::WRL::ComPtr<IMFMediaSource> &pSource,          // Media source.
+    const Microsoft::WRL::ComPtr<IMFPresentationDescriptor> &pPD,   // Presentation descriptor.
+    HWND hVideoWnd                   // Video window.
+)
+{
+    // Create a new topology.
+    Microsoft::WRL::ComPtr<IMFTopology> pTopology;
+    HRESULT hr = MFCreateTopology(&pTopology);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // Get the number of streams in the media source.
+    DWORD cSourceStreams = 0;
+    hr = pPD->GetStreamDescriptorCount(&cSourceStreams);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    // For each stream, create the topology nodes and add them to the topology.
+    for (DWORD i = 0; i < cSourceStreams; i++)
+    {
+        hr = AddBranchToPartialTopology(pTopology, pSource, pPD, i, hVideoWnd);
+        if (FAILED(hr))
+        {
+            return nullptr;
+        }
+    }
+
+    return pTopology;
+}
+
+static Microsoft::WRL::ComPtr<IMFPresentationDescriptor> GetPresentationDescriptor(
+    IMFMediaEvent *pEvent
+)
+{
+    PROPVARIANT var;
+    HRESULT hr = pEvent->GetValue(&var);
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+
+    Microsoft::WRL::ComPtr<IMFPresentationDescriptor> pPD;
+    if (var.vt == VT_UNKNOWN)
+    {
+        hr = MF_E_INVALIDTYPE;
+    }
+    else {
+        hr = var.punkVal->QueryInterface(IID_PPV_ARGS(&pPD));
+    }
+    PropVariantClear(&var);
+
+    // Get the presentation descriptor from the event.
+    if (FAILED(hr))
+    {
+        return nullptr;
+    }
+    return pPD;
+}
 
 //  Static class method to create the CPlayer object.
 
@@ -191,43 +431,42 @@ HRESULT CPlayer::OpenURL(const WCHAR *sURL)
     // 4. Queue the topology [asynchronous]
     // 5. Start playback [asynchronous - does not happen in this method.]
 
-    IMFTopology *pTopology = NULL;
-    IMFPresentationDescriptor* pSourcePD = NULL;
+    m_state = Closed;
 
     // Create the media session.
     HRESULT hr = CreateSession();
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     // Create the media source.
     m_pSource = CreateMediaSource(sURL);
     if (!m_pSource)
     {
-        hr = E_FAIL;
-        goto done;
+        return E_FAIL;
     }
 
     // Create the presentation descriptor for the media source.
+    Microsoft::WRL::ComPtr<IMFPresentationDescriptor> pSourcePD;
     hr = m_pSource->CreatePresentationDescriptor(&pSourcePD);
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     // Create a partial topology.
-    hr = CreatePlaybackTopology(m_pSource.Get(), pSourcePD, m_hwndVideo, &pTopology);
-    if (FAILED(hr))
+    auto  pTopology = CreatePlaybackTopology(m_pSource.Get(), pSourcePD, m_hwndVideo);
+    if (!pTopology)
     {
-        goto done;
+        return E_FAIL;
     }
 
     // Set the topology on the media session.
-    hr = m_pSession->SetTopology(0, pTopology);
+    hr = m_pSession->SetTopology(0, pTopology.Get());
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     m_state = OpenPending;
@@ -235,15 +474,7 @@ HRESULT CPlayer::OpenURL(const WCHAR *sURL)
     // If SetTopology succeeds, the media session will queue an 
     // MESessionTopologySet event.
 
-done:
-    if (FAILED(hr))
-    {
-        m_state = Closed;
-    }
-
-    SafeRelease(&pSourcePD);
-    SafeRelease(&pTopology);
-    return hr;
+    return S_OK;
 }
 
 //  Pause playback.
@@ -493,35 +724,26 @@ HRESULT CPlayer::OnPresentationEnded(IMFMediaEvent *pEvent)
 
 HRESULT CPlayer::OnNewPresentation(IMFMediaEvent *pEvent)
 {
-    IMFPresentationDescriptor *pPD = NULL;
-    IMFTopology *pTopology = NULL;
-
-    // Get the presentation descriptor from the event.
-    HRESULT hr = GetEventObject(pEvent, &pPD);
-    if (FAILED(hr))
-    {
-        goto done;
+    auto pPD = GetPresentationDescriptor(pEvent);
+    if (!pPD) {
+        return E_FAIL;
     }
 
     // Create a partial topology.
-    hr = CreatePlaybackTopology(m_pSource.Get(), pPD,  m_hwndVideo,&pTopology);
-    if (FAILED(hr))
+    auto pTopology = CreatePlaybackTopology(m_pSource.Get(), pPD,  m_hwndVideo);
+    if (!pTopology)
     {
-        goto done;
+        return E_FAIL;
     }
 
     // Set the topology on the media session.
-    hr = m_pSession->SetTopology(0, pTopology);
+    auto hr = m_pSession->SetTopology(0, pTopology.Get());
     if (FAILED(hr))
     {
-        goto done;
+        return hr;
     }
 
     m_state = OpenPending;
-
-done:
-    SafeRelease(&pTopology);
-    SafeRelease(&pPD);
     return S_OK;
 }
 
@@ -644,281 +866,3 @@ HRESULT CPlayer::Play()
     }
     return StartPlayback();
 }
-
-
-
-//  Create an activation object for a renderer, based on the stream media type.
-
-HRESULT CreateMediaSinkActivate(
-        IMFStreamDescriptor *pSourceSD,     // Pointer to the stream descriptor.
-        HWND hVideoWindow,                  // Handle to the video clipping window.
-        IMFActivate **ppActivate
-        )
-{
-    IMFMediaTypeHandler *pHandler = NULL;
-    IMFActivate *pActivate = NULL;
-
-    // Get the media type handler for the stream.
-    HRESULT hr = pSourceSD->GetMediaTypeHandler(&pHandler);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Get the major media type.
-    GUID guidMajorType;
-    hr = pHandler->GetMajorType(&guidMajorType);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Create an IMFActivate object for the renderer, based on the media type.
-    if (MFMediaType_Audio == guidMajorType)
-    {
-        // Create the audio renderer.
-        hr = MFCreateAudioRendererActivate(&pActivate);
-    }
-    else if (MFMediaType_Video == guidMajorType)
-    {
-        // Create the video renderer.
-        hr = MFCreateVideoRendererActivate(hVideoWindow, &pActivate);
-    }
-    else
-    {
-        // Unknown stream type. 
-        hr = E_FAIL;
-        // Optionally, you could deselect this stream instead of failing.
-    }
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Return IMFActivate pointer to caller.
-    *ppActivate = pActivate;
-    (*ppActivate)->AddRef();
-
-done:
-    SafeRelease(&pHandler);
-    SafeRelease(&pActivate);
-    return hr;
-}
-
-// Add a source node to a topology.
-HRESULT AddSourceNode(
-        IMFTopology *pTopology,           // Topology.
-        IMFMediaSource *pSource,          // Media source.
-        IMFPresentationDescriptor *pPD,   // Presentation descriptor.
-        IMFStreamDescriptor *pSD,         // Stream descriptor.
-        IMFTopologyNode **ppNode)         // Receives the node pointer.
-{
-    IMFTopologyNode *pNode = NULL;
-
-    // Create the node.
-    HRESULT hr = MFCreateTopologyNode(MF_TOPOLOGY_SOURCESTREAM_NODE, &pNode);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Set the attributes.
-    hr = pNode->SetUnknown(MF_TOPONODE_SOURCE, pSource);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    hr = pNode->SetUnknown(MF_TOPONODE_PRESENTATION_DESCRIPTOR, pPD);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    hr = pNode->SetUnknown(MF_TOPONODE_STREAM_DESCRIPTOR, pSD);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Add the node to the topology.
-    hr = pTopology->AddNode(pNode);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Return the pointer to the caller.
-    *ppNode = pNode;
-    (*ppNode)->AddRef();
-
-done:
-    SafeRelease(&pNode);
-    return hr;
-}
-
-// Add an output node to a topology.
-HRESULT AddOutputNode(
-        IMFTopology *pTopology,     // Topology.
-        IMFActivate *pActivate,     // Media sink activation object.
-        DWORD dwId,                 // Identifier of the stream sink.
-        IMFTopologyNode **ppNode)   // Receives the node pointer.
-{
-    IMFTopologyNode *pNode = NULL;
-
-    // Create the node.
-    HRESULT hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &pNode);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Set the object pointer.
-    hr = pNode->SetObject(pActivate);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Set the stream sink ID attribute.
-    hr = pNode->SetUINT32(MF_TOPONODE_STREAMID, dwId);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    hr = pNode->SetUINT32(MF_TOPONODE_NOSHUTDOWN_ON_REMOVE, FALSE);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Add the node to the topology.
-    hr = pTopology->AddNode(pNode);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // Return the pointer to the caller.
-    *ppNode = pNode;
-    (*ppNode)->AddRef();
-
-done:
-    SafeRelease(&pNode);
-    return hr;
-}
-//</SnippetPlayer.cpp>
-
-//  Add a topology branch for one stream.
-//
-//  For each stream, this function does the following:
-//
-//    1. Creates a source node associated with the stream. 
-//    2. Creates an output node for the renderer. 
-//    3. Connects the two nodes.
-//
-//  The media session will add any decoders that are needed.
-
-HRESULT AddBranchToPartialTopology(
-        IMFTopology *pTopology,         // Topology.
-        IMFMediaSource *pSource,        // Media source.
-        IMFPresentationDescriptor *pPD, // Presentation descriptor.
-        DWORD iStream,                  // Stream index.
-        HWND hVideoWnd)                 // Window for video playback.
-{
-    IMFStreamDescriptor *pSD = NULL;
-    IMFActivate         *pSinkActivate = NULL;
-    IMFTopologyNode     *pSourceNode = NULL;
-    IMFTopologyNode     *pOutputNode = NULL;
-
-    BOOL fSelected = FALSE;
-
-    HRESULT hr = pPD->GetStreamDescriptorByIndex(iStream, &fSelected, &pSD);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    if (fSelected)
-    {
-        // Create the media sink activation object.
-        hr = CreateMediaSinkActivate(pSD, hVideoWnd, &pSinkActivate);
-        if (FAILED(hr))
-        {
-            goto done;
-        }
-
-        // Add a source node for this stream.
-        hr = AddSourceNode(pTopology, pSource, pPD, pSD, &pSourceNode);
-        if (FAILED(hr))
-        {
-            goto done;
-        }
-
-        // Create the output node for the renderer.
-        hr = AddOutputNode(pTopology, pSinkActivate, 0, &pOutputNode);
-        if (FAILED(hr))
-        {
-            goto done;
-        }
-
-        // Connect the source node to the output node.
-        hr = pSourceNode->ConnectOutput(0, pOutputNode, 0);
-    }
-    // else: If not selected, don't add the branch. 
-
-done:
-    SafeRelease(&pSD);
-    SafeRelease(&pSinkActivate);
-    SafeRelease(&pSourceNode);
-    SafeRelease(&pOutputNode);
-    return hr;
-}
-
-//  Create a playback topology from a media source.
-HRESULT CreatePlaybackTopology(
-        IMFMediaSource *pSource,          // Media source.
-        IMFPresentationDescriptor *pPD,   // Presentation descriptor.
-        HWND hVideoWnd,                   // Video window.
-        IMFTopology **ppTopology)         // Receives a pointer to the topology.
-{
-    IMFTopology *pTopology = NULL;
-    DWORD cSourceStreams = 0;
-
-    // Create a new topology.
-    HRESULT hr = MFCreateTopology(&pTopology);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-
-
-
-    // Get the number of streams in the media source.
-    hr = pPD->GetStreamDescriptorCount(&cSourceStreams);
-    if (FAILED(hr))
-    {
-        goto done;
-    }
-
-    // For each stream, create the topology nodes and add them to the topology.
-    for (DWORD i = 0; i < cSourceStreams; i++)
-    {
-        hr = AddBranchToPartialTopology(pTopology, pSource, pPD, i, hVideoWnd);
-        if (FAILED(hr))
-        {
-            goto done;
-        }
-    }
-
-    // Return the IMFTopology pointer to the caller.
-    *ppTopology = pTopology;
-    (*ppTopology)->AddRef();
-
-done:
-    SafeRelease(&pTopology);
-    return hr;
-}
-
