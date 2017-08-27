@@ -14,5 +14,6 @@ TARGET_LINK_LIBRARIES(CustomVideoRenderer
     Mfplat
     Mfuuid
     strmiids
+    wmcodecdspuuid
     )
 
