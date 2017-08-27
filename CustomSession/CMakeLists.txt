@@ -16,5 +16,6 @@ TARGET_LINK_LIBRARIES(CustomSession
     Mfplat
     Mfuuid
     strmiids
+    CustomVideoRenderer
     )
 

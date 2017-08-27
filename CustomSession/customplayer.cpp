@@ -6,6 +6,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
 #include "CustomPlayer.h"
+#include "../CustomVideoRenderer/CustomVideoRenderer.h"
 #include <assert.h>
 
 #pragma comment(lib, "shlwapi")
@@ -224,6 +225,7 @@ static HRESULT AddBranchToPartialTopology(
         return hr;
     }
 
+#if 0
     // Create the media sink activation object.
     auto pSinkActivate = CreateMediaSinkActivate(pSD, hVideoWnd);
     if (!pSinkActivate)
@@ -235,6 +237,43 @@ static HRESULT AddBranchToPartialTopology(
     if (!pOutputNode) {
         return E_FAIL;
     }
+#else
+    // Create the node.
+    Microsoft::WRL::ComPtr<IMFTopologyNode> pOutputNode;
+    if(FAILED(hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &pOutputNode)))
+    {
+        return hr;
+    }
+
+    Microsoft::WRL::ComPtr<IMFMediaSink> pSink;
+    if(FAILED(hr=CreateCustomVideoRenderer(IID_PPV_ARGS(&pSink)))){
+        return hr;
+    }
+
+    Microsoft::WRL::ComPtr<IMFStreamSink> pSSink;
+    if(FAILED(hr=pSink->GetStreamSinkByIndex(0, &pSSink))){
+        return hr;
+    }
+
+    // Set the object pointer.
+    if (FAILED(hr = pOutputNode->SetObject(pSSink.Get())))
+    {
+        return hr;
+    }
+
+    // Set the stream sink ID attribute.
+    hr = pOutputNode->SetUINT32(MF_TOPONODE_STREAMID, 0);
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
+    hr = pOutputNode->SetUINT32(MF_TOPONODE_NOSHUTDOWN_ON_REMOVE, FALSE);
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+#endif
 
     // Add the node to the topology.
     hr = pTopology->AddNode(pOutputNode.Get());
