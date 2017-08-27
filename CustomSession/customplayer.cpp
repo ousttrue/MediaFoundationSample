@@ -225,55 +225,97 @@ static HRESULT AddBranchToPartialTopology(
         return hr;
     }
 
-#if 0
-    // Create the media sink activation object.
-    auto pSinkActivate = CreateMediaSinkActivate(pSD, hVideoWnd);
-    if (!pSinkActivate)
+    // Get the media type handler for the stream.
+    Microsoft::WRL::ComPtr<IMFMediaTypeHandler> pHandler;
+    hr = pSD->GetMediaTypeHandler(&pHandler);
+    if (FAILED(hr))
     {
-        return E_FAIL;
+        return hr;
     }
 
-    auto pOutputNode = CreateOutputNode(pSinkActivate, 0);
-    if (!pOutputNode) {
-        return E_FAIL;
+    // Get the major media type.
+    GUID guidMajorType;
+    hr = pHandler->GetMajorType(&guidMajorType);
+    if (FAILED(hr))
+    {
+        return hr;
     }
-#else
-    // Create the node.
+
+    // Create an IMFActivate object for the renderer, based on the media type.
     Microsoft::WRL::ComPtr<IMFTopologyNode> pOutputNode;
-    if(FAILED(hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &pOutputNode)))
+    if (MFMediaType_Audio == guidMajorType)
     {
-        return hr;
-    }
+        // Create the audio renderer.
+        Microsoft::WRL::ComPtr<IMFActivate> pSinkActivate;
+        hr = MFCreateAudioRendererActivate(&pSinkActivate);
+        if (FAILED(hr))
+        {
+            return hr;
+        }
 
-    Microsoft::WRL::ComPtr<IMFMediaSink> pSink;
-    if(FAILED(hr=CreateCustomVideoRenderer(IID_PPV_ARGS(&pSink)))){
-        return hr;
+        pOutputNode = CreateOutputNode(pSinkActivate, 0);
+        if (!pOutputNode) {
+            return E_FAIL;
+        }
     }
-
-    Microsoft::WRL::ComPtr<IMFStreamSink> pSSink;
-    if(FAILED(hr=pSink->GetStreamSinkByIndex(0, &pSSink))){
-        return hr;
-    }
-
-    // Set the object pointer.
-    if (FAILED(hr = pOutputNode->SetObject(pSSink.Get())))
+    else if (MFMediaType_Video == guidMajorType)
     {
-        return hr;
-    }
+#if 0
+        // Create the video renderer.
+        Microsoft::WRL::ComPtr<IMFActivate> pSinkActivate;
+        hr = MFCreateVideoRendererActivate(hVideoWindow, &pSinkActivate);
+        if (FAILED(hr))
+        {
+            return hr;
+        }
 
-    // Set the stream sink ID attribute.
-    hr = pOutputNode->SetUINT32(MF_TOPONODE_STREAMID, 0);
-    if (FAILED(hr))
-    {
-        return hr;
-    }
+        pOutputNode = CreateOutputNode(pSinkActivate, 0);
+        if (!pOutputNode) {
+            return E_FAIL;
+        }
+#else
+        // Create the node.
+        if (FAILED(hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &pOutputNode)))
+        {
+            return hr;
+        }
 
-    hr = pOutputNode->SetUINT32(MF_TOPONODE_NOSHUTDOWN_ON_REMOVE, FALSE);
-    if (FAILED(hr))
-    {
-        return hr;
-    }
+        Microsoft::WRL::ComPtr<IMFMediaSink> pSink;
+        if (FAILED(hr = CreateCustomVideoRenderer(IID_PPV_ARGS(&pSink)))) {
+            return hr;
+        }
+
+        Microsoft::WRL::ComPtr<IMFStreamSink> pSSink;
+        if (FAILED(hr = pSink->GetStreamSinkByIndex(0, &pSSink))) {
+            return hr;
+        }
+
+        // Set the object pointer.
+        if (FAILED(hr = pOutputNode->SetObject(pSSink.Get())))
+        {
+            return hr;
+        }
+
+        // Set the stream sink ID attribute.
+        hr = pOutputNode->SetUINT32(MF_TOPONODE_STREAMID, 0);
+        if (FAILED(hr))
+        {
+            return hr;
+        }
+
+        hr = pOutputNode->SetUINT32(MF_TOPONODE_NOSHUTDOWN_ON_REMOVE, FALSE);
+        if (FAILED(hr))
+        {
+            return hr;
+        }
 #endif
+    }
+    else
+    {
+        // Unknown stream type. 
+        return E_FAIL;
+        // Optionally, you could deselect this stream instead of failing.
+    }
 
     // Add the node to the topology.
     hr = pTopology->AddNode(pOutputNode.Get());
