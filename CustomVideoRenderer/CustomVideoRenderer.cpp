@@ -394,6 +394,7 @@ class CustomVideoStreamSink: public IMFStreamSink, public IMFMediaTypeHandler
     Microsoft::WRL::ComPtr<IMFMediaSink>               m_pSink; 
     bool m_IsShutdown = false;
     Microsoft::WRL::ComPtr<IMFMediaType> m_pCurrentType;
+    Microsoft::WRL::ComPtr<IMFMediaEventQueue> m_pEventQueue;
 
     State m_state = State::State_TypeNotSet;
 
@@ -412,6 +413,15 @@ public:
           , m_critSec(critSec)
           , m_pSink(parent)
     {
+        MFCreateEventQueue(&m_pEventQueue);
+    }
+
+    virtual ~CustomVideoStreamSink()
+    {
+        if (m_pEventQueue) {
+            m_pEventQueue->Shutdown();
+            m_pEventQueue.Reset();
+        }
     }
 
     HRESULT CheckShutdown(void) const
@@ -538,22 +548,81 @@ public:
     // IMFMediaEventGenerator (from IMFStreamSink)
     STDMETHODIMP BeginGetEvent(IMFAsyncCallback* pCallback,IUnknown* punkState)override
     {
-        return E_FAIL;
+        HRESULT hr = S_OK;
+
+        CAutoLock lock(&m_critSec);
+        hr = CheckShutdown();
+
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pEventQueue->BeginGetEvent(pCallback, punkState);
+        }
+
+        return hr;
     }
 
     STDMETHODIMP EndGetEvent(IMFAsyncResult* pResult, _Out_ IMFMediaEvent** ppEvent)override
     {
-        return E_FAIL;
+        HRESULT hr = S_OK;
+
+        CAutoLock lock(&m_critSec);
+        hr = CheckShutdown();
+
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pEventQueue->EndGetEvent(pResult, ppEvent);
+        }
+
+        return hr;
     }
 
     STDMETHODIMP GetEvent(DWORD dwFlags, __RPC__deref_out_opt IMFMediaEvent** ppEvent)override
     {
-        return E_FAIL;
+        // NOTE:
+        // GetEvent can block indefinitely, so we don't hold the lock.
+        // This requires some juggling with the event queue pointer.
+
+        HRESULT hr = S_OK;
+
+        Microsoft::WRL::ComPtr<IMFMediaEventQueue> pQueue;
+
+        { // scope for lock
+
+            CAutoLock lock(&m_critSec);
+
+            // Check shutdown
+            hr = CheckShutdown();
+
+            // Get the pointer to the event queue.
+            if (SUCCEEDED(hr))
+            {
+                pQueue = m_pEventQueue;
+            }
+
+        }   // release lock
+
+            // Now get the event.
+        if (SUCCEEDED(hr))
+        {
+            hr = pQueue->GetEvent(dwFlags, ppEvent);
+        }
+
+        return hr;
     }
 
     STDMETHODIMP QueueEvent(MediaEventType met, __RPC__in REFGUID guidExtendedType, HRESULT hrStatus, __RPC__in_opt const PROPVARIANT* pvValue)override
     {
-        return E_FAIL;
+        HRESULT hr = S_OK;
+
+        CAutoLock lock(&m_critSec);
+        hr = CheckShutdown();
+
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pEventQueue->QueueEventParamVar(met, guidExtendedType, hrStatus, pvValue);
+        }
+
+        return hr;
     }
 
     // IMFMediaTypeHandler
@@ -909,7 +978,7 @@ public:
 };
 
 
-class CustomVideoRenderer: public IMFMediaSink
+class CustomVideoRenderer: public IMFMediaSink, public IMFClockStateSink
 {
     ULONG m_nRefCount = 1;
     Microsoft::WRL::ComPtr<CustomVideoStreamSink> m_pStream;
@@ -917,6 +986,7 @@ class CustomVideoRenderer: public IMFMediaSink
     bool m_IsShutdown=false;
     CCritSec m_csMediaSink;
     const DWORD STREAM_ID = 1;
+    Microsoft::WRL::ComPtr<IMFPresentationClock> m_pClock;
 
     CustomVideoRenderer()
     {
@@ -1054,7 +1124,30 @@ public:
 
     STDMETHODIMP GetPresentationClock(__RPC__deref_out_opt IMFPresentationClock** ppPresentationClock)override
     {
-        return E_FAIL;
+        CAutoLock lock(&m_csMediaSink);
+
+        if (ppPresentationClock == NULL)
+        {
+            return E_POINTER;
+        }
+
+        HRESULT hr = CheckShutdown();
+
+        if (SUCCEEDED(hr))
+        {
+            if (m_pClock == NULL)
+            {
+                hr = MF_E_NO_CLOCK; // There is no presentation clock.
+            }
+            else
+            {
+                // Return the pointer to the caller.
+                *ppPresentationClock = m_pClock.Get();
+                (*ppPresentationClock)->AddRef();
+            }
+        }
+
+        return hr;
     }
 
     STDMETHODIMP GetStreamSinkById(DWORD dwStreamSinkIdentifier
@@ -1136,10 +1229,96 @@ public:
 
     STDMETHODIMP SetPresentationClock(__RPC__in_opt IMFPresentationClock* pPresentationClock)override
     {
-        return E_FAIL;
+        CAutoLock lock(&m_csMediaSink);
+
+        HRESULT hr = CheckShutdown();
+
+        // If we already have a clock, remove ourselves from that clock's
+        // state notifications.
+        if (SUCCEEDED(hr))
+        {
+            if (m_pClock)
+            {
+                hr = m_pClock->RemoveClockStateSink(this);
+            }
+        }
+
+        // Register ourselves to get state notifications from the new clock.
+        if (SUCCEEDED(hr))
+        {
+            if (pPresentationClock)
+            {
+                hr = pPresentationClock->AddClockStateSink(this);
+            }
+        }
+
+        if (SUCCEEDED(hr))
+        {
+            // Release the pointer to the old clock.
+            // Store the pointer to the new clock.
+            m_pClock = pPresentationClock;
+        }
+
+        return hr;
     }
 
     STDMETHODIMP Shutdown(void)override
+    {
+        CAutoLock lock(&m_csMediaSink);
+
+        HRESULT hr = MF_E_SHUTDOWN;
+
+        m_IsShutdown = TRUE;
+
+        /*
+        if (m_pStream != NULL)
+        {
+            m_pStream->Shutdown();
+        }
+
+        if (m_pPresenter != NULL)
+        {
+            m_pPresenter->Shutdown();
+        }
+        */
+
+        m_pClock.Reset();
+        m_pStream.Reset();
+        //SafeRelease(m_pPresenter);
+
+        /*
+        if (m_pScheduler != NULL)
+        {
+            hr = m_pScheduler->StopScheduler();
+        }
+        SafeRelease(m_pScheduler);
+        */
+
+        return hr;
+    }
+
+    // IMFClockStateSink methods
+    STDMETHODIMP OnClockPause(MFTIME hnsSystemTime)override
+    {
+        return E_FAIL;
+    }
+
+    STDMETHODIMP OnClockRestart(MFTIME hnsSystemTime)override
+    {
+        return E_FAIL;
+    }
+
+    STDMETHODIMP OnClockSetRate(MFTIME hnsSystemTime, float flRate)override
+    {
+        return E_FAIL;
+    }
+
+    STDMETHODIMP OnClockStart(MFTIME hnsSystemTime, LONGLONG llClockStartOffset)override
+    {
+        return E_FAIL;
+    }
+
+    STDMETHODIMP OnClockStop(MFTIME hnsSystemTime)override
     {
         return E_FAIL;
     }
