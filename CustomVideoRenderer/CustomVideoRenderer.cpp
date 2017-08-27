@@ -1116,7 +1116,9 @@ public:
 
         if (SUCCEEDED(hr))
         {
-            *pdwCharacteristics = MEDIASINK_FIXED_STREAMS | MEDIASINK_CAN_PREROLL;
+            *pdwCharacteristics = MEDIASINK_FIXED_STREAMS
+                //| MEDIASINK_CAN_PREROLL
+                ;
         }
 
         return hr;
