@@ -540,9 +540,14 @@ public:
         return E_FAIL;
     }
 
+    int m_count = 0;
     STDMETHODIMP ProcessSample(__RPC__in_opt IMFSample* pSample)override
     {
-        return E_FAIL;
+        ++m_count;
+        auto hr = S_OK;
+        hr = QueueEvent(MEStreamSinkRequestSample, GUID_NULL, hr, NULL);
+
+        return hr;
     }
 
     // IMFMediaEventGenerator (from IMFStreamSink)
@@ -1317,7 +1322,19 @@ public:
 
     STDMETHODIMP OnClockStart(MFTIME hnsSystemTime, LONGLONG llClockStartOffset)override
     {
-        return E_FAIL;
+        CAutoLock lock(&m_csMediaSink);
+
+        HRESULT hr = CheckShutdown();
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pStream->QueueEvent(MEStreamSinkStarted, GUID_NULL, hr, NULL);
+        }
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pStream->QueueEvent(MEStreamSinkRequestSample, GUID_NULL, hr, NULL);
+        }
+
+        return hr;
     }
 
     STDMETHODIMP OnClockStop(MFTIME hnsSystemTime)override
