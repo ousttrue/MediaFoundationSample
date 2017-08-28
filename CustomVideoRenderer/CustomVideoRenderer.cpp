@@ -7,6 +7,11 @@
 #include <string>
 #include <Strsafe.h>
 
+#include <d3d11.h>
+#include <dxgi.h>
+#include <evr.h>
+
+
 
 // Control how we batch work from the decoder.
 // On receiving a sample we request another one if the number on the queue is
@@ -483,7 +488,574 @@ private:
 };
 
 
-class CustomVideoStreamSink: public IMFStreamSink, public IMFMediaTypeHandler
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Wrapper class for D3D11 Device and D3D11 Video device used for DXVA to Software decode switch
+class CPrivate_ID3D11VideoDevice : public ID3D11VideoDevice
+{
+private:
+
+    ID3D11VideoDevice* m_pReal;
+    ULONG m_cRef;
+
+public:
+
+    CPrivate_ID3D11VideoDevice(ID3D11VideoDevice* pReal) :
+        m_pReal(pReal),
+        m_cRef(0)
+    {
+    }
+
+    virtual ~CPrivate_ID3D11VideoDevice(void)
+    {
+    }
+
+    STDMETHODIMP QueryInterface(
+        /* [in] */ REFIID riid,
+        /* [iid_is][out] */ __RPC__deref_out void __RPC_FAR* __RPC_FAR* ppvObject)
+    {
+        if (__uuidof(ID3D11VideoDevice) == riid)
+        {
+            this->AddRef();
+            *ppvObject = this;
+            return S_OK;
+        }
+        else
+        {
+            return m_pReal->QueryInterface(riid, ppvObject);
+        }
+    }
+
+    STDMETHODIMP_(ULONG) AddRef(void)
+    {
+        InterlockedIncrement(&m_cRef);
+        return m_pReal->AddRef();
+    }
+
+    STDMETHODIMP_(ULONG) Release(void)
+    {
+        ULONG ulVal = m_pReal->Release();
+        if (0 == InterlockedDecrement(&m_cRef))
+        {
+        }
+        return ulVal;
+    }
+
+    STDMETHODIMP CreateVideoDecoder(
+        _In_  const D3D11_VIDEO_DECODER_DESC* pVideoDesc,
+        _In_  const D3D11_VIDEO_DECODER_CONFIG* pConfig,
+        _Out_  ID3D11VideoDecoder** ppDecoder)
+    {
+        return E_FAIL;
+    }
+
+    STDMETHODIMP CreateVideoProcessor(
+        _In_  ID3D11VideoProcessorEnumerator* pEnum,
+        _In_  UINT RateConversionIndex,
+        _Out_  ID3D11VideoProcessor** ppVideoProcessor)
+    {
+        return m_pReal->CreateVideoProcessor(pEnum, RateConversionIndex, ppVideoProcessor);
+    }
+
+    STDMETHODIMP CreateAuthenticatedChannel(
+        _In_  D3D11_AUTHENTICATED_CHANNEL_TYPE ChannelType,
+        _Out_  ID3D11AuthenticatedChannel** ppAuthenticatedChannel)
+    {
+        return m_pReal->CreateAuthenticatedChannel(ChannelType, ppAuthenticatedChannel);
+    }
+
+    STDMETHODIMP CreateCryptoSession(
+        _In_  const GUID* pCryptoType,
+        _In_opt_  const GUID* pDecoderProfile,
+        _In_  const GUID* pKeyExchangeType,
+        _Outptr_  ID3D11CryptoSession** ppCryptoSession)
+    {
+        return m_pReal->CreateCryptoSession(pCryptoType, pDecoderProfile, pKeyExchangeType, ppCryptoSession);
+    }
+
+    STDMETHODIMP CreateVideoDecoderOutputView(
+        _In_  ID3D11Resource* pResource,
+        _In_  const D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC* pDesc,
+        _Out_opt_  ID3D11VideoDecoderOutputView** ppVDOVView)
+    {
+        return m_pReal->CreateVideoDecoderOutputView(pResource, pDesc, ppVDOVView);
+    }
+
+    STDMETHODIMP CreateVideoProcessorInputView(
+        _In_  ID3D11Resource* pResource,
+        _In_  ID3D11VideoProcessorEnumerator* pEnum,
+        _In_  const D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC* pDesc,
+        _Out_opt_  ID3D11VideoProcessorInputView** ppVPIView)
+    {
+        return m_pReal->CreateVideoProcessorInputView(pResource, pEnum, pDesc, ppVPIView);
+    }
+
+    STDMETHODIMP CreateVideoProcessorOutputView(
+        _In_  ID3D11Resource* pResource,
+        _In_  ID3D11VideoProcessorEnumerator* pEnum,
+        _In_  const D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC* pDesc,
+        _Out_opt_  ID3D11VideoProcessorOutputView** ppVPOView)
+    {
+        return m_pReal->CreateVideoProcessorOutputView(pResource, pEnum, pDesc, ppVPOView);
+    }
+
+    STDMETHODIMP CreateVideoProcessorEnumerator(
+        _In_  const D3D11_VIDEO_PROCESSOR_CONTENT_DESC* pDesc,
+        _Out_  ID3D11VideoProcessorEnumerator** ppEnum)
+    {
+        return m_pReal->CreateVideoProcessorEnumerator(pDesc, ppEnum);
+    }
+
+    STDMETHODIMP_(UINT) GetVideoDecoderProfileCount(void)
+    {
+        return m_pReal->GetVideoDecoderProfileCount();
+    }
+
+    STDMETHODIMP GetVideoDecoderProfile(
+        _In_  UINT Index,
+        _Out_  GUID* pDecoderProfile)
+    {
+        return m_pReal->GetVideoDecoderProfile(Index, pDecoderProfile);
+    }
+
+    STDMETHODIMP CheckVideoDecoderFormat(
+        _In_  const GUID* pDecoderProfile,
+        _In_  DXGI_FORMAT Format,
+        _Out_  BOOL* pSupported)
+    {
+        return m_pReal->CheckVideoDecoderFormat(pDecoderProfile, Format, pSupported);
+    }
+
+    STDMETHODIMP GetVideoDecoderConfigCount(
+        _In_  const D3D11_VIDEO_DECODER_DESC* pDesc,
+        _Out_  UINT* pCount)
+    {
+        return m_pReal->GetVideoDecoderConfigCount(pDesc, pCount);
+    }
+
+    STDMETHODIMP GetVideoDecoderConfig(
+        _In_  const D3D11_VIDEO_DECODER_DESC* pDesc,
+        _In_  UINT Index,
+        _Out_  D3D11_VIDEO_DECODER_CONFIG* pConfig)
+    {
+        return m_pReal->GetVideoDecoderConfig(pDesc, Index, pConfig);
+    }
+
+    STDMETHODIMP GetContentProtectionCaps(
+        _In_opt_  const GUID* pCryptoType,
+        _In_opt_  const GUID* pDecoderProfile,
+        _Out_  D3D11_VIDEO_CONTENT_PROTECTION_CAPS* pCaps)
+    {
+        return m_pReal->GetContentProtectionCaps(pCryptoType, pDecoderProfile, pCaps);
+    }
+
+    STDMETHODIMP CheckCryptoKeyExchange(
+        _In_  const GUID* pCryptoType,
+        _In_opt_  const GUID* pDecoderProfile,
+        _In_  UINT Index,
+        _Out_  GUID* pKeyExchangeType)
+    {
+        return m_pReal->CheckCryptoKeyExchange(pCryptoType, pDecoderProfile, Index, pKeyExchangeType);
+    }
+
+    STDMETHODIMP SetPrivateData(
+        _In_  REFGUID guid,
+        _In_  UINT DataSize,
+        _In_reads_bytes_opt_(DataSize)  const void* pData)
+    {
+        return m_pReal->SetPrivateData(guid, DataSize, pData);
+    }
+
+    STDMETHODIMP SetPrivateDataInterface(
+        _In_  REFGUID guid,
+        _In_opt_  const IUnknown* pData)
+    {
+        return m_pReal->SetPrivateDataInterface(guid, pData);
+    }
+};
+
+class CPrivate_ID3D11Device : public ID3D11Device
+{
+private:
+
+    ID3D11Device* m_pReal;
+    ULONG m_cRef;
+    CPrivate_ID3D11VideoDevice* m_pVideoDevice;
+
+public:
+
+    CPrivate_ID3D11Device(ID3D11Device* pReal) :
+        m_pReal(pReal),
+        m_cRef(1),
+        m_pVideoDevice(NULL)
+    {
+        ID3D11VideoDevice* pDevice;
+        m_pReal->QueryInterface(__uuidof(ID3D11VideoDevice), (void**)&pDevice);
+        m_pVideoDevice = new CPrivate_ID3D11VideoDevice(pDevice);
+        if (pDevice != NULL)
+        {
+            pDevice->Release();
+        }
+    }
+
+    virtual ~CPrivate_ID3D11Device(void)
+    {
+        if (m_pVideoDevice) {
+            delete m_pVideoDevice;
+            m_pVideoDevice = 0;
+        }
+    }
+
+    STDMETHODIMP QueryInterface(
+        /* [in] */ REFIID riid,
+        /* [iid_is][out] */ __RPC__deref_out void __RPC_FAR* __RPC_FAR* ppvObject)
+    {
+        if (__uuidof(ID3D11VideoDevice) == riid)
+        {
+            m_pVideoDevice->AddRef();
+            *ppvObject = m_pVideoDevice;
+            return S_OK;
+        }
+        else if (__uuidof(ID3D11Device) == riid)
+        {
+            this->AddRef();
+            *ppvObject = this;
+            return S_OK;
+        }
+        else
+        {
+            return m_pReal->QueryInterface(riid, ppvObject);
+        }
+    }
+
+    STDMETHODIMP_(ULONG) AddRef(void)
+    {
+        InterlockedIncrement(&m_cRef);
+        return m_pReal->AddRef();
+    }
+
+    STDMETHODIMP_(ULONG) Release(void)
+    {
+        ULONG ulVal = m_pReal->Release();
+        if (0 == InterlockedDecrement(&m_cRef))
+        {
+            delete this;
+        }
+        return ulVal;
+    }
+
+    STDMETHODIMP CreateBuffer(
+        _In_  const D3D11_BUFFER_DESC* pDesc,
+        _In_opt_  const D3D11_SUBRESOURCE_DATA* pInitialData,
+        _Out_opt_  ID3D11Buffer** ppBuffer)
+    {
+        return m_pReal->CreateBuffer(pDesc, pInitialData, ppBuffer);
+    }
+
+    STDMETHODIMP CreateTexture1D(
+        _In_  const D3D11_TEXTURE1D_DESC* pDesc,
+        _In_reads_opt_(pDesc->MipLevels * pDesc->ArraySize)  const D3D11_SUBRESOURCE_DATA* pInitialData,
+        _Out_opt_  ID3D11Texture1D** ppTexture1D)
+    {
+        return m_pReal->CreateTexture1D(pDesc, pInitialData, ppTexture1D);
+    }
+
+    STDMETHODIMP CreateTexture2D(
+        _In_  const D3D11_TEXTURE2D_DESC* pDesc,
+        _In_reads_opt_(pDesc->MipLevels * pDesc->ArraySize)  const D3D11_SUBRESOURCE_DATA* pInitialData,
+        _Out_opt_  ID3D11Texture2D** ppTexture2D)
+    {
+        return m_pReal->CreateTexture2D(pDesc, pInitialData, ppTexture2D);
+    }
+
+    STDMETHODIMP CreateTexture3D(
+        _In_  const D3D11_TEXTURE3D_DESC* pDesc,
+        _In_reads_opt_(pDesc->MipLevels)  const D3D11_SUBRESOURCE_DATA* pInitialData,
+        _Out_opt_  ID3D11Texture3D** ppTexture3D)
+    {
+        return m_pReal->CreateTexture3D(pDesc, pInitialData, ppTexture3D);
+    }
+
+    STDMETHODIMP CreateShaderResourceView(
+        _In_  ID3D11Resource* pResource,
+        _In_opt_  const D3D11_SHADER_RESOURCE_VIEW_DESC* pDesc,
+        _Out_opt_  ID3D11ShaderResourceView** ppSRView)
+    {
+        return m_pReal->CreateShaderResourceView(pResource, pDesc, ppSRView);
+    }
+
+    STDMETHODIMP CreateUnorderedAccessView(
+        _In_  ID3D11Resource* pResource,
+        _In_opt_  const D3D11_UNORDERED_ACCESS_VIEW_DESC* pDesc,
+        _Out_opt_  ID3D11UnorderedAccessView** ppUAView)
+    {
+        return m_pReal->CreateUnorderedAccessView(pResource, pDesc, ppUAView);
+    }
+
+    STDMETHODIMP CreateRenderTargetView(
+        _In_  ID3D11Resource* pResource,
+        _In_opt_  const D3D11_RENDER_TARGET_VIEW_DESC* pDesc,
+        _Out_opt_  ID3D11RenderTargetView** ppRTView)
+    {
+        return m_pReal->CreateRenderTargetView(pResource, pDesc, ppRTView);
+    }
+
+    STDMETHODIMP CreateDepthStencilView(
+        _In_  ID3D11Resource* pResource,
+        _In_opt_  const D3D11_DEPTH_STENCIL_VIEW_DESC* pDesc,
+        _Out_opt_  ID3D11DepthStencilView** ppDepthStencilView)
+    {
+        return m_pReal->CreateDepthStencilView(pResource, pDesc, ppDepthStencilView);
+    }
+
+    STDMETHODIMP CreateInputLayout(
+        _In_reads_(NumElements)  const D3D11_INPUT_ELEMENT_DESC* pInputElementDescs,
+        _In_range_(0, D3D11_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT)  UINT NumElements,
+        _In_  const void* pShaderBytecodeWithInputSignature,
+        _In_  SIZE_T BytecodeLength,
+        _Out_opt_  ID3D11InputLayout** ppInputLayout)
+    {
+        return m_pReal->CreateInputLayout(pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature, BytecodeLength, ppInputLayout);
+    }
+
+    STDMETHODIMP CreateVertexShader(
+        _In_  const void* pShaderBytecode,
+        _In_  SIZE_T BytecodeLength,
+        _In_opt_  ID3D11ClassLinkage* pClassLinkage,
+        _Out_opt_  ID3D11VertexShader** ppVertexShader)
+    {
+        return m_pReal->CreateVertexShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppVertexShader);
+    }
+
+    STDMETHODIMP CreateGeometryShader(
+        _In_  const void* pShaderBytecode,
+        _In_  SIZE_T BytecodeLength,
+        _In_opt_  ID3D11ClassLinkage* pClassLinkage,
+        _Out_opt_  ID3D11GeometryShader** ppGeometryShader)
+    {
+        return m_pReal->CreateGeometryShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppGeometryShader);
+    }
+
+    STDMETHODIMP CreateGeometryShaderWithStreamOutput(
+        _In_  const void* pShaderBytecode,
+        _In_  SIZE_T BytecodeLength,
+        _In_reads_opt_(NumEntries)  const D3D11_SO_DECLARATION_ENTRY* pSODeclaration,
+        _In_range_(0, D3D11_SO_STREAM_COUNT * D3D11_SO_OUTPUT_COMPONENT_COUNT)  UINT NumEntries,
+        _In_reads_opt_(NumStrides)  const UINT* pBufferStrides,
+        _In_range_(0, D3D11_SO_BUFFER_SLOT_COUNT)  UINT NumStrides,
+        _In_  UINT RasterizedStream,
+        _In_opt_  ID3D11ClassLinkage* pClassLinkage,
+        _Out_opt_  ID3D11GeometryShader** ppGeometryShader)
+    {
+        return m_pReal->CreateGeometryShaderWithStreamOutput(pShaderBytecode, BytecodeLength, pSODeclaration, NumEntries, pBufferStrides, NumStrides, RasterizedStream, pClassLinkage, ppGeometryShader);
+    }
+
+    STDMETHODIMP CreatePixelShader(
+        _In_  const void* pShaderBytecode,
+        _In_  SIZE_T BytecodeLength,
+        _In_opt_  ID3D11ClassLinkage* pClassLinkage,
+        _Out_opt_  ID3D11PixelShader** ppPixelShader)
+    {
+        return m_pReal->CreatePixelShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppPixelShader);
+    }
+
+    STDMETHODIMP CreateHullShader(
+        _In_  const void* pShaderBytecode,
+        _In_  SIZE_T BytecodeLength,
+        _In_opt_  ID3D11ClassLinkage* pClassLinkage,
+        _Out_opt_  ID3D11HullShader** ppHullShader)
+    {
+        return m_pReal->CreateHullShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppHullShader);
+    }
+
+    STDMETHODIMP CreateDomainShader(
+        _In_  const void* pShaderBytecode,
+        _In_  SIZE_T BytecodeLength,
+        _In_opt_  ID3D11ClassLinkage* pClassLinkage,
+        _Out_opt_  ID3D11DomainShader** ppDomainShader)
+    {
+        return m_pReal->CreateDomainShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppDomainShader);
+    }
+
+    STDMETHODIMP CreateComputeShader(
+        _In_  const void* pShaderBytecode,
+        _In_  SIZE_T BytecodeLength,
+        _In_opt_  ID3D11ClassLinkage* pClassLinkage,
+        _Out_opt_  ID3D11ComputeShader** ppComputeShader)
+    {
+        return m_pReal->CreateComputeShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppComputeShader);
+    }
+
+    STDMETHODIMP CreateClassLinkage(
+        _Out_  ID3D11ClassLinkage** ppLinkage)
+    {
+        return m_pReal->CreateClassLinkage(ppLinkage);
+    }
+
+    STDMETHODIMP CreateBlendState(
+        _In_  const D3D11_BLEND_DESC* pBlendStateDesc,
+        _Out_opt_  ID3D11BlendState** ppBlendState)
+    {
+        return m_pReal->CreateBlendState(pBlendStateDesc, ppBlendState);
+    }
+
+    STDMETHODIMP CreateDepthStencilState(
+        _In_  const D3D11_DEPTH_STENCIL_DESC* pDepthStencilDesc,
+        _Out_opt_  ID3D11DepthStencilState** ppDepthStencilState)
+    {
+        return m_pReal->CreateDepthStencilState(pDepthStencilDesc, ppDepthStencilState);
+    }
+
+    STDMETHODIMP CreateRasterizerState(
+        _In_  const D3D11_RASTERIZER_DESC* pRasterizerDesc,
+        _Out_opt_  ID3D11RasterizerState** ppRasterizerState)
+    {
+        return m_pReal->CreateRasterizerState(pRasterizerDesc, ppRasterizerState);
+    }
+
+    STDMETHODIMP CreateSamplerState(
+        _In_  const D3D11_SAMPLER_DESC* pSamplerDesc,
+        _Out_opt_  ID3D11SamplerState** ppSamplerState)
+    {
+        return m_pReal->CreateSamplerState(pSamplerDesc, ppSamplerState);
+    }
+
+    STDMETHODIMP CreateQuery(
+        _In_  const D3D11_QUERY_DESC* pQueryDesc,
+        _Out_opt_  ID3D11Query** ppQuery)
+    {
+        return m_pReal->CreateQuery(pQueryDesc, ppQuery);
+    }
+
+    STDMETHODIMP CreatePredicate(
+        _In_  const D3D11_QUERY_DESC* pPredicateDesc,
+        _Out_opt_  ID3D11Predicate** ppPredicate)
+    {
+        return m_pReal->CreatePredicate(pPredicateDesc, ppPredicate);
+    }
+
+    STDMETHODIMP CreateCounter(
+        _In_  const D3D11_COUNTER_DESC* pCounterDesc,
+        _Out_opt_  ID3D11Counter** ppCounter)
+    {
+        return m_pReal->CreateCounter(pCounterDesc, ppCounter);
+    }
+
+    STDMETHODIMP CreateDeferredContext(
+        UINT ContextFlags,
+        _Out_opt_  ID3D11DeviceContext** ppDeferredContext)
+    {
+        return m_pReal->CreateDeferredContext(ContextFlags, ppDeferredContext);
+    }
+
+    STDMETHODIMP OpenSharedResource(
+        _In_  HANDLE hResource,
+        _In_  REFIID ReturnedInterface,
+        _Out_opt_  void** ppResource)
+    {
+        return m_pReal->OpenSharedResource(hResource, ReturnedInterface, ppResource);
+    }
+
+    STDMETHODIMP CheckFormatSupport(
+        _In_  DXGI_FORMAT Format,
+        _Out_  UINT* pFormatSupport)
+    {
+        return m_pReal->CheckFormatSupport(Format, pFormatSupport);
+    }
+
+    STDMETHODIMP CheckMultisampleQualityLevels(
+        _In_  DXGI_FORMAT Format,
+        _In_  UINT SampleCount,
+        _Out_  UINT* pNumQualityLevels)
+    {
+        return m_pReal->CheckMultisampleQualityLevels(Format, SampleCount, pNumQualityLevels);
+    }
+
+    STDMETHODIMP_(void) CheckCounterInfo(
+        _Out_  D3D11_COUNTER_INFO* pCounterInfo)
+    {
+        return m_pReal->CheckCounterInfo(pCounterInfo);
+    }
+
+    STDMETHODIMP CheckCounter(
+        _In_  const D3D11_COUNTER_DESC* pDesc,
+        _Out_  D3D11_COUNTER_TYPE* pType,
+        _Out_  UINT* pActiveCounters,
+        _Out_writes_opt_(*pNameLength)  LPSTR szName,
+        _Inout_opt_  UINT* pNameLength,
+        _Out_writes_opt_(*pUnitsLength)  LPSTR szUnits,
+        _Inout_opt_  UINT* pUnitsLength,
+        _Out_writes_opt_(*pDescriptionLength)  LPSTR szDescription,
+        _Inout_opt_  UINT* pDescriptionLength)
+    {
+        return m_pReal->CheckCounter(pDesc, pType, pActiveCounters, szName, pNameLength, szUnits, pUnitsLength, szDescription, pDescriptionLength);
+    }
+
+    STDMETHODIMP CheckFeatureSupport(
+        D3D11_FEATURE Feature,
+        _Out_writes_bytes_(FeatureSupportDataSize)  void* pFeatureSupportData,
+        UINT FeatureSupportDataSize)
+    {
+        return m_pReal->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
+    }
+
+    STDMETHODIMP GetPrivateData(
+        _In_  REFGUID guid,
+        _Inout_  UINT* pDataSize,
+        _Out_writes_bytes_opt_(*pDataSize)  void* pData)
+    {
+        return m_pReal->GetPrivateData(guid, pDataSize, pData);
+    }
+
+    STDMETHODIMP SetPrivateData(
+        _In_  REFGUID guid,
+        _In_  UINT DataSize,
+        _In_reads_bytes_opt_(DataSize)  const void* pData)
+    {
+        return m_pReal->SetPrivateData(guid, DataSize, pData);
+    }
+
+    STDMETHODIMP SetPrivateDataInterface(
+        _In_  REFGUID guid,
+        _In_opt_  const IUnknown* pData)
+    {
+        return m_pReal->SetPrivateDataInterface(guid, pData);
+    }
+
+    STDMETHODIMP_(D3D_FEATURE_LEVEL) GetFeatureLevel(void)
+    {
+        return m_pReal->GetFeatureLevel();
+    }
+
+    STDMETHODIMP_(UINT) GetCreationFlags(void)
+    {
+        return m_pReal->GetCreationFlags();
+    }
+
+    STDMETHODIMP GetDeviceRemovedReason(void)
+    {
+        return m_pReal->GetDeviceRemovedReason();
+    }
+
+    STDMETHODIMP_(void) GetImmediateContext(
+        _Out_  ID3D11DeviceContext** ppImmediateContext)
+    {
+        return m_pReal->GetImmediateContext(ppImmediateContext);
+    }
+
+    STDMETHODIMP SetExceptionMode(
+        UINT RaiseFlags)
+    {
+        return m_pReal->SetExceptionMode(RaiseFlags);
+    }
+
+    STDMETHODIMP_(UINT) GetExceptionMode(void)
+    {
+        return m_pReal->GetExceptionMode();
+    }
+};
+
+
+class CustomVideoStreamSink: public IMFStreamSink, public IMFMediaTypeHandler, public IMFGetService
 {
     ULONG m_nRefCount = 1;
 
@@ -508,6 +1080,12 @@ class CustomVideoStreamSink: public IMFStreamSink, public IMFMediaTypeHandler
     CAsyncCallback<CustomVideoStreamSink> m_WorkQueueCB;                  // Callback for the work queue.
     DWORD m_cOutstandingSampleRequests = 0;
 
+    Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> m_pDXGIManager;
+    Microsoft::WRL::ComPtr<ID3D11Device> m_pD3D11Device;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_pD3DImmediateContext;
+    BOOL m_useDebugLayer = FALSE;
+    UINT m_DeviceResetToken = 0;
+
 public:
     CustomVideoStreamSink(DWORD dwStreamId, CCritSec& critSec
             , IMFMediaSink *parent)
@@ -517,6 +1095,99 @@ public:
           , m_WorkQueueCB(this, &CustomVideoStreamSink::RequestSamples)
     {
         MFCreateEventQueue(&m_pEventQueue);
+
+        CreateDXGIManagerAndDevice(D3D_DRIVER_TYPE_HARDWARE);
+    }
+
+    HRESULT CreateDXGIManagerAndDevice(D3D_DRIVER_TYPE DriverType)
+    {
+        HRESULT hr = S_OK;
+
+        D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3, D3D_FEATURE_LEVEL_9_2, D3D_FEATURE_LEVEL_9_1 };
+        D3D_FEATURE_LEVEL featureLevel;
+
+        do
+        {
+            m_pD3D11Device.Reset();
+            if (D3D_DRIVER_TYPE_WARP == DriverType)
+            {
+                ID3D11Device* pD3D11Device = NULL;
+
+                hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, m_useDebugLayer, featureLevels, ARRAYSIZE(featureLevels), D3D11_SDK_VERSION, &pD3D11Device, &featureLevel, NULL);
+
+                if (SUCCEEDED(hr))
+                {
+                    m_pD3D11Device = new CPrivate_ID3D11Device(pD3D11Device);
+                    if (NULL == m_pD3D11Device)
+                    {
+                        E_OUTOFMEMORY;
+                    }
+                }
+                // SafeRelease(pD3D11Device);
+            }
+            else
+            {
+                for (DWORD dwCount = 0; dwCount < ARRAYSIZE(featureLevels); dwCount++)
+                {
+                    hr = D3D11CreateDevice(NULL, DriverType, NULL, m_useDebugLayer, &featureLevels[dwCount], 1, D3D11_SDK_VERSION, &m_pD3D11Device, &featureLevel, NULL);
+                    if (SUCCEEDED(hr))
+                    {
+                        Microsoft::WRL::ComPtr<ID3D11VideoDevice> pDX11VideoDevice;
+                        hr = m_pD3D11Device->QueryInterface(__uuidof(ID3D11VideoDevice), (void**)&pDX11VideoDevice);
+
+                        if (SUCCEEDED(hr))
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (FAILED(hr))
+            {
+                break;
+            }
+
+            if (NULL == m_pDXGIManager) {
+
+                UINT resetToken;
+                hr = MFCreateDXGIDeviceManager(&resetToken, &m_pDXGIManager);
+                if (FAILED(hr))
+                {
+                    break;
+                }
+                m_DeviceResetToken = resetToken;
+            }
+
+            hr = m_pDXGIManager->ResetDevice(m_pD3D11Device.Get(), m_DeviceResetToken);
+            if (FAILED(hr))
+            {
+                break;
+            }
+
+            //SafeRelease(m_pD3DImmediateContext);
+            m_pD3D11Device->GetImmediateContext(&m_pD3DImmediateContext);
+
+            // Need to explitly set the multithreaded mode for this device
+            Microsoft::WRL::ComPtr<ID3D10Multithread> pMultiThread;
+            hr = m_pD3DImmediateContext.As(&pMultiThread);
+            if (FAILED(hr))
+            {
+                break;
+            }
+
+            pMultiThread->SetMultithreadProtected(TRUE);
+        } while (FALSE);
+
+        /*
+        SafeRelease(pTempAdapter);
+        SafeRelease(pMultiThread);
+        SafeRelease(pDXGIDev);
+        SafeRelease(pAdapter);
+        SafeRelease(pDXGIOutput);
+        */
+
+        return hr;
     }
 
     HRESULT CheckShutdown(void) const
@@ -770,6 +1441,10 @@ public:
         {
             *ppv = static_cast<IMFMediaTypeHandler*>(this);
         }
+        else if (iid == __uuidof(IMFGetService))
+        {
+            *ppv = static_cast<IMFGetService*>(this);
+        }
         else
         {
             *ppv = NULL;
@@ -788,6 +1463,38 @@ public:
         }
         // For thread safety, return a temporary variable.
         return uCount;
+    }
+
+    // IMFGetService
+    STDMETHODIMP GetService(__RPC__in REFGUID guidService, __RPC__in REFIID riid, __RPC__deref_out_opt LPVOID* ppvObject)override
+    {
+        HRESULT hr = S_OK;
+
+        if (guidService == MR_VIDEO_ACCELERATION_SERVICE)
+        {
+            if (riid == __uuidof(IMFDXGIDeviceManager))
+            {
+                if (NULL != m_pDXGIManager)
+                {
+                    *ppvObject = m_pDXGIManager.Get();
+                    ((IUnknown*)*ppvObject)->AddRef();
+                }
+                else
+                {
+                    hr = E_NOINTERFACE;
+                }
+            }
+            else
+            {
+                hr = E_NOINTERFACE;
+            }
+        }
+        else
+        {
+            hr = MF_E_UNSUPPORTED_SERVICE;
+        }
+
+        return hr;
     }
 
     // IMFStreamSink
@@ -854,6 +1561,47 @@ public:
         m_cOutstandingSampleRequests--;
 
         // do something
+        do
+        {
+            DWORD cBuffers = 0;
+            auto hr = pSample->GetBufferCount(&cBuffers);
+            if (FAILED(hr))
+            {
+                return hr;
+            }
+
+            Microsoft::WRL::ComPtr<IMFMediaBuffer> pBuffer;
+            if (1 == cBuffers)
+            {
+                hr = pSample->GetBufferByIndex(0, &pBuffer);
+            }
+            else
+            {
+                hr = pSample->ConvertToContiguousBuffer(&pBuffer);
+            }
+            if (FAILED(hr))
+            {
+                return hr;
+            }
+
+            Microsoft::WRL::ComPtr<IMFDXGIBuffer> pDXGIBuffer;
+            hr = pBuffer.As(&pDXGIBuffer);
+            if (FAILED(hr))
+            {
+                break;
+            }
+
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> pTexture2D;
+            hr = pDXGIBuffer->GetResource(IID_PPV_ARGS(&pTexture2D));
+            if (FAILED(hr))
+            {
+                break;
+            }
+
+            D3D11_TEXTURE2D_DESC desc;
+            pTexture2D->GetDesc(&desc);
+
+        } while (false);
 
         return  S_OK;
     }
@@ -1291,16 +2039,16 @@ public:
 };
 
 
-class CustomVideoRenderer: public IMFMediaSink, public IMFClockStateSink
+class CustomVideoRenderer : public IMFMediaSink, public IMFClockStateSink
 {
     ULONG m_nRefCount = 1;
     Microsoft::WRL::ComPtr<CustomVideoStreamSink> m_pStream;
     CCritSec m_csStreamSinkAndScheduler;
-    bool m_IsShutdown=false;
+    bool m_IsShutdown = false;
     CCritSec m_csMediaSink;
     const DWORD STREAM_ID = 1;
     Microsoft::WRL::ComPtr<IMFPresentationClock> m_pClock;
-    DWORD m_key=0;
+    DWORD m_key = 0;
 
     CustomVideoRenderer()
     {
@@ -1316,6 +2064,8 @@ class CustomVideoRenderer: public IMFMediaSink, public IMFClockStateSink
             p->Release();
             p = nullptr;
         }
+
+        // dxgidevicemanager
 
         return hr;
     }
