@@ -8,6 +8,15 @@
 #include <Strsafe.h>
 
 
+// Control how we batch work from the decoder.
+// On receiving a sample we request another one if the number on the queue is
+// less than the hi water threshold.
+// When displaying samples (removing them from the sample queue) we request
+// another one if the number of falls below the lo water threshold
+//
+#define SAMPLE_QUEUE_HIWATER_THRESHOLD 3
+
+
 GUID const* const s_pVideoFormats[] =
 {
     &MFVideoFormat_NV12,
@@ -385,6 +394,95 @@ private:
 };
 
 
+//////////////////////////////////////////////////////////////////////////
+//  CAsyncCallback [template]
+//
+//  Description:
+//  Helper class that routes IMFAsyncCallback::Invoke calls to a class
+//  method on the parent class.
+//
+//  Usage:
+//  Add this class as a member variable. In the parent class constructor,
+//  initialize the CAsyncCallback class like this:
+//      m_cb(this, &CYourClass::OnInvoke)
+//  where
+//      m_cb       = CAsyncCallback object
+//      CYourClass = parent class
+//      OnInvoke   = Method in the parent class to receive Invoke calls.
+//
+//  The parent's OnInvoke method (you can name it anything you like) must
+//  have a signature that matches the InvokeFn typedef below.
+//////////////////////////////////////////////////////////////////////////
+
+// T: Type of the parent object
+template<class T>
+class CAsyncCallback : public IMFAsyncCallback
+{
+public:
+
+    typedef HRESULT(T::*InvokeFn)(IMFAsyncResult* pAsyncResult);
+
+    CAsyncCallback(T* pParent, InvokeFn fn) :
+        m_pParent(pParent),
+        m_pInvokeFn(fn)
+    {
+    }
+
+    // IUnknown
+    STDMETHODIMP_(ULONG) AddRef(void)
+    {
+        // Delegate to parent class.
+        return m_pParent->AddRef();
+    }
+
+    STDMETHODIMP_(ULONG) Release(void)
+    {
+        // Delegate to parent class.
+        return m_pParent->Release();
+    }
+
+    STDMETHODIMP QueryInterface(REFIID iid, __RPC__deref_out _Result_nullonfailure_ void** ppv)
+    {
+        if (!ppv)
+        {
+            return E_POINTER;
+        }
+        if (iid == __uuidof(IUnknown))
+        {
+            *ppv = static_cast<IUnknown*>(static_cast<IMFAsyncCallback*>(this));
+        }
+        else if (iid == __uuidof(IMFAsyncCallback))
+        {
+            *ppv = static_cast<IMFAsyncCallback*>(this);
+        }
+        else
+        {
+            *ppv = NULL;
+            return E_NOINTERFACE;
+        }
+        AddRef();
+        return S_OK;
+    }
+
+    // IMFAsyncCallback methods
+    STDMETHODIMP GetParameters(__RPC__out DWORD* pdwFlags, __RPC__out DWORD* pdwQueue)
+    {
+        // Implementation of this method is optional.
+        return E_NOTIMPL;
+    }
+
+    STDMETHODIMP Invoke(__RPC__in_opt IMFAsyncResult* pAsyncResult)
+    {
+        return (m_pParent->*m_pInvokeFn)(pAsyncResult);
+    }
+
+private:
+
+    T* m_pParent;
+    InvokeFn m_pInvokeFn;
+};
+
+
 class CustomVideoStreamSink: public IMFStreamSink, public IMFMediaTypeHandler
 {
     ULONG m_nRefCount = 1;
@@ -406,22 +504,19 @@ class CustomVideoStreamSink: public IMFStreamSink, public IMFMediaTypeHandler
     sFraction m_imageBytesPP = { 1, 1 };
     DXGI_FORMAT                 m_dxgiFormat = DXGI_FORMAT_UNKNOWN;
 
+    DWORD                       m_WorkQueueId=0;                  // ID of the work queue for asynchronous operations.
+    CAsyncCallback<CustomVideoStreamSink> m_WorkQueueCB;                  // Callback for the work queue.
+    DWORD m_cOutstandingSampleRequests = 0;
+
 public:
     CustomVideoStreamSink(DWORD dwStreamId, CCritSec& critSec
             , IMFMediaSink *parent)
         : STREAM_ID(dwStreamId)
           , m_critSec(critSec)
           , m_pSink(parent)
+          , m_WorkQueueCB(this, &CustomVideoStreamSink::RequestSamples)
     {
         MFCreateEventQueue(&m_pEventQueue);
-    }
-
-    virtual ~CustomVideoStreamSink()
-    {
-        if (m_pEventQueue) {
-            m_pEventQueue->Shutdown();
-            m_pEventQueue.Reset();
-        }
     }
 
     HRESULT CheckShutdown(void) const
@@ -434,6 +529,217 @@ public:
         {
             return S_OK;
         }
+    }
+
+    //+-------------------------------------------------------------------------
+    //
+    //  Member:     NeedMoreSamples
+    //
+    //  Synopsis:   Returns true if the number of samples in flight
+    //              (queued + requested) is less than the max allowed
+    //
+    //--------------------------------------------------------------------------
+    BOOL NeedMoreSamples(void)
+    {
+        const DWORD cSamplesInFlight = /*m_SamplesToProcess.GetCount() +*/ m_cOutstandingSampleRequests;
+
+        return cSamplesInFlight < SAMPLE_QUEUE_HIWATER_THRESHOLD;
+    }
+
+    HRESULT RequestSamples(IMFAsyncResult* pAsyncResult)
+    {
+        HRESULT hr = S_OK;
+
+        while (NeedMoreSamples())
+        {
+            hr = CheckShutdown();
+            if (FAILED(hr))
+            {
+                break;
+            }
+
+            m_cOutstandingSampleRequests++;
+
+            hr = QueueEvent(MEStreamSinkRequestSample, GUID_NULL, S_OK, NULL);
+        }
+
+        hr=QueueRequest();
+
+        return hr;
+    }
+
+    const INT64 interval = 1000 / 30;
+    HRESULT QueueRequest()
+    {
+        HRESULT hr = S_OK;
+
+        if (SUCCEEDED(hr))
+        {
+            MFWORKITEM_KEY cancelKey;
+            hr = MFScheduleWorkItem(&m_WorkQueueCB, nullptr, -interval, &cancelKey);
+        }
+
+        return hr;
+    }
+
+    //-------------------------------------------------------------------
+    // Name: Pause
+    // Description: Called when the presentation clock pauses.
+    //-------------------------------------------------------------------
+
+    HRESULT Pause(void)
+    {
+        CAutoLock lock(&m_critSec);
+
+        HRESULT hr = ValidateOperation(m_state, StreamOperation::OpPause);
+
+        if (SUCCEEDED(hr))
+        {
+            m_state = State::State_Paused;
+            //hr = QueueAsyncOperation(StreamOperation::OpPause);
+        }
+
+        return hr;
+    }
+
+    /*
+    HRESULT Preroll(void)
+    {
+        HRESULT hr = S_OK;
+
+        CAutoLock lock(&m_critSec);
+
+        hr = CheckShutdown();
+
+        if (SUCCEEDED(hr))
+        {
+            m_fPrerolling = TRUE;
+            m_fWaitingForOnClockStart = TRUE;
+
+            // Kick things off by requesting a sample...
+            m_cOutstandingSampleRequests++;
+
+            hr = QueueEvent(MEStreamSinkRequestSample, GUID_NULL, hr, NULL);
+        }
+
+        return hr;
+    }
+    */
+
+    //-------------------------------------------------------------------
+    // Name: Restart
+    // Description: Called when the presentation clock restarts.
+    //-------------------------------------------------------------------
+
+    HRESULT Restart(void)
+    {
+        CAutoLock lock(&m_critSec);
+
+        HRESULT hr = ValidateOperation(m_state, StreamOperation::OpRestart);
+
+        if (SUCCEEDED(hr))
+        {
+            m_state = State::State_Started;
+            //hr = QueueAsyncOperation(OpRestart);
+        }
+
+        return hr;
+    }
+
+    //-------------------------------------------------------------------
+    // Name: Shutdown
+    // Description: Shuts down the stream sink.
+    //-------------------------------------------------------------------
+
+    HRESULT Shutdown(void)
+    {
+        CAutoLock lock(&m_critSec);
+
+        m_IsShutdown = TRUE;
+
+        if (m_pEventQueue)
+        {
+            m_pEventQueue->Shutdown();
+        }
+
+        MFUnlockWorkQueue(m_WorkQueueId);
+
+        //m_SamplesToProcess.Clear();
+
+        m_pSink.Reset();
+        m_pEventQueue.Reset();
+        //SafeRelease(m_pByteStream);
+        //SafeRelease(m_pPresenter);
+        m_pCurrentType.Reset();
+
+        return MF_E_SHUTDOWN;
+    }
+
+    //-------------------------------------------------------------------
+    // Name: Start
+    // Description: Called when the presentation clock starts.
+    // Note: Start time can be PRESENTATION_CURRENT_POSITION meaning
+    //       resume from the last current position.
+    //-------------------------------------------------------------------
+
+    HRESULT Start(MFTIME start)
+    {
+        CAutoLock lock(&m_critSec);
+
+        HRESULT hr = S_OK;
+
+        do
+        {
+            hr = ValidateOperation(m_state, StreamOperation::OpStart);
+            if (FAILED(hr))
+            {
+                break;
+            }
+
+            if (start != PRESENTATION_CURRENT_POSITION)
+            {
+                // We're starting from a "new" position
+                //m_StartTime = start;        // Cache the start time.
+            }
+
+            m_state = State::State_Started;
+            //hr = QueueAsyncOperation(OpStart);
+
+            hr = CheckShutdown();
+            if (SUCCEEDED(hr))
+            {
+                hr = QueueEvent(MEStreamSinkStarted, GUID_NULL, hr, NULL);
+            }
+
+            {
+                hr=QueueRequest();
+            }
+
+        } while (FALSE);
+
+        //m_fWaitingForOnClockStart = FALSE;
+
+        return hr;
+    }
+
+    //-------------------------------------------------------------------
+    // Name: Stop
+    // Description: Called when the presentation clock stops.
+    //-------------------------------------------------------------------
+
+    HRESULT Stop(void)
+    {
+        CAutoLock lock(&m_critSec);
+
+        HRESULT hr = ValidateOperation(m_state, StreamOperation::OpStop);
+
+        if (SUCCEEDED(hr))
+        {
+            m_state = State::State_Stopped;
+            //hr = QueueAsyncOperation(StreamOperation::OpStop);
+        }
+
+        return hr;
     }
 
     // IUnknown
@@ -487,7 +793,7 @@ public:
     // IMFStreamSink
     STDMETHODIMP Flush(void)override
     {
-        return E_FAIL;
+        return S_OK;
     }
 
     STDMETHODIMP GetIdentifier(__RPC__out DWORD* pdwIdentifier)override
@@ -544,10 +850,12 @@ public:
     STDMETHODIMP ProcessSample(__RPC__in_opt IMFSample* pSample)override
     {
         ++m_count;
-        auto hr = S_OK;
-        hr = QueueEvent(MEStreamSinkRequestSample, GUID_NULL, hr, NULL);
 
-        return hr;
+        m_cOutstandingSampleRequests--;
+
+        // do something
+
+        return  S_OK;
     }
 
     // IMFMediaEventGenerator (from IMFStreamSink)
@@ -992,6 +1300,7 @@ class CustomVideoRenderer: public IMFMediaSink, public IMFClockStateSink
     CCritSec m_csMediaSink;
     const DWORD STREAM_ID = 1;
     Microsoft::WRL::ComPtr<IMFPresentationClock> m_pClock;
+    DWORD m_key=0;
 
     CustomVideoRenderer()
     {
@@ -1277,12 +1586,12 @@ public:
 
         m_IsShutdown = TRUE;
 
-        /*
         if (m_pStream != NULL)
         {
             m_pStream->Shutdown();
         }
 
+        /*
         if (m_pPresenter != NULL)
         {
             m_pPresenter->Shutdown();
@@ -1307,17 +1616,43 @@ public:
     // IMFClockStateSink methods
     STDMETHODIMP OnClockPause(MFTIME hnsSystemTime)override
     {
-        return E_FAIL;
+        CAutoLock lock(&m_csMediaSink);
+
+        HRESULT hr = CheckShutdown();
+
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pStream->Pause();
+        }
+
+        return hr;
     }
 
     STDMETHODIMP OnClockRestart(MFTIME hnsSystemTime)override
     {
-        return E_FAIL;
+        CAutoLock lock(&m_csMediaSink);
+
+        HRESULT hr = CheckShutdown();
+
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pStream->Restart();
+        }
+
+        return hr;
     }
 
     STDMETHODIMP OnClockSetRate(MFTIME hnsSystemTime, float flRate)override
     {
-        return E_FAIL;
+        /*
+        if (m_pScheduler != NULL)
+        {
+            // Tell the scheduler about the new rate.
+            m_pScheduler->SetClockRate(flRate);
+        }
+        */
+
+        return S_OK;
     }
 
     STDMETHODIMP OnClockStart(MFTIME hnsSystemTime, LONGLONG llClockStartOffset)override
@@ -1325,13 +1660,33 @@ public:
         CAutoLock lock(&m_csMediaSink);
 
         HRESULT hr = CheckShutdown();
-        if (SUCCEEDED(hr))
+        if (FAILED(hr))
         {
-            hr = m_pStream->QueueEvent(MEStreamSinkStarted, GUID_NULL, hr, NULL);
+            return hr;
         }
+
+        // Check if the clock is already active (not stopped).
+        // And if the clock position changes while the clock is active, it
+        // is a seek request. We need to flush all pending samples.
+        //if (m_pStream->IsActive() && llClockStartOffset != PRESENTATION_CURRENT_POSITION)
+        {
+            // This call blocks until the scheduler threads discards all scheduled samples.
+            hr = m_pStream->Flush();
+        }
+        /*
+        else
+        {
+            if (m_pScheduler != NULL)
+            {
+                // Start the scheduler thread.
+                hr = m_pScheduler->StartScheduler(m_pClock);
+            }
+        }
+        */
+
         if (SUCCEEDED(hr))
         {
-            hr = m_pStream->QueueEvent(MEStreamSinkRequestSample, GUID_NULL, hr, NULL);
+            hr = m_pStream->Start(llClockStartOffset);
         }
 
         return hr;
@@ -1339,7 +1694,27 @@ public:
 
     STDMETHODIMP OnClockStop(MFTIME hnsSystemTime)override
     {
-        return E_FAIL;
+        CAutoLock lock(&m_csMediaSink);
+
+        HRESULT hr = CheckShutdown();
+
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pStream->Stop();
+        }
+
+        /*
+        if (SUCCEEDED(hr))
+        {
+            if (m_pScheduler != NULL)
+            {
+                // Stop the scheduler thread.
+                hr = m_pScheduler->StopScheduler();
+            }
+        }
+        */
+
+        return hr;
     }
 };
 
